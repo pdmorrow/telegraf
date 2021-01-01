@@ -19,46 +19,65 @@ var (
 
 type Chrony struct {
 	DNSLookup bool `toml:"dns_lookup"`
+	UseSocket bool `toml:"use_socket"`
 	path      string
 }
 
 func (*Chrony) Description() string {
-	return "Get standard chrony metrics, requires chronyc executable."
+	return "Get standard chrony metrics, requires chronyc executable unless the use_socket option is set to true."
 }
 
 func (*Chrony) SampleConfig() string {
 	return `
   ## If true, chronyc tries to perform a DNS lookup for the time server.
   # dns_lookup = false
+  ## If false then screen scrape the output from "chronyc tracking" in order to
+  # gather metrics, if true gather the metrics directly from chronyd via a
+  # local network socket.
+  # use_socket = false
   `
 }
 
 func (c *Chrony) Init() error {
-	var err error
-	c.path, err = exec.LookPath("chronyc")
-	if err != nil {
-		return errors.New("chronyc not found: verify that chrony is installed and that chronyc is in your PATH")
+	if !c.UseSocket {
+		var err error
+		c.path, err = exec.LookPath("chronyc")
+		if err != nil {
+			return errors.New("chronyc not found: verify that chrony is installed and that chronyc is in your PATH")
+		}
 	}
+
 	return nil
 }
 
 func (c *Chrony) Gather(acc telegraf.Accumulator) error {
-	flags := []string{}
-	if !c.DNSLookup {
-		flags = append(flags, "-n")
-	}
-	flags = append(flags, "tracking")
+	if !c.UseSocket {
+		flags := []string{}
+		if !c.DNSLookup {
+			flags = append(flags, "-n")
+		}
+		flags = append(flags, "tracking")
 
-	cmd := execCommand(c.path, flags...)
-	out, err := internal.CombinedOutputTimeout(cmd, time.Second*5)
-	if err != nil {
-		return fmt.Errorf("failed to run command %s: %s - %s", strings.Join(cmd.Args, " "), err, string(out))
+		cmd := execCommand(c.path, flags...)
+		out, err := internal.CombinedOutputTimeout(cmd, time.Second*5)
+		if err != nil {
+			return fmt.Errorf("failed to run command %s: %s - %s", strings.Join(cmd.Args, " "), err, string(out))
+		}
+		fields, tags, err := processChronycOutput(string(out))
+		if err != nil {
+			return err
+		}
+
+		acc.AddFields("chrony", fields, tags)
+	} else {
+		fields, tags, err := c.trackingFromDomainSocket()
+		if err != nil {
+			return err
+		}
+
+		acc.AddFields("chrony", fields, tags)
 	}
-	fields, tags, err := processChronycOutput(string(out))
-	if err != nil {
-		return err
-	}
-	acc.AddFields("chrony", fields, tags)
+
 	return nil
 }
 
@@ -108,6 +127,7 @@ func processChronycOutput(out string) (map[string]interface{}, map[string]string
 		}
 		if strings.Contains(strings.ToLower(name), "reference_id") {
 			tags["reference_id"] = valueFields[0]
+			tags["reference_name"] = strings.TrimSuffix(strings.TrimPrefix(valueFields[1], "("), ")")
 			continue
 		}
 		value, err := strconv.ParseFloat(valueFields[0], 64)

@@ -24,9 +24,10 @@ func TestGather(t *testing.T) {
 	}
 
 	tags := map[string]string{
-		"reference_id": "192.168.1.22",
-		"leap_status":  "not synchronized",
-		"stratum":      "3",
+		"reference_id":   "192.168.1.22",
+		"reference_name": "192.168.1.22",
+		"leap_status":    "not synchronized",
+		"stratum":        "3",
 	}
 	fields := map[string]interface{}{
 		"system_time":     0.000020390,
